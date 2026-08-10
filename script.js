@@ -1,14 +1,57 @@
 /**
  * A Little World Made Just for Her
  * Cinematic Interactive Experience with Integrated Canvas Firework Engine
+ * & Adaptive Performance Layer
  */
 
+let fireworkSoundVolume = 1.0;
+let isAmbientMode = false;
+let ambientInterval = null;
+
 /* ==================================================
-   1. CONFIGURATION SYSTEM
+   1. CONFIGURATION SYSTEM & ADAPTIVE PERFORMANCE LEVELS
    ================================================== */
 const Config = {
-  scaleFactor: 0.90, // Firework scale set to 90%
-  celebrationDuration: 9500, // Duration of active firework launches
+  performanceTier: 'HIGH', // Detected dynamically: HIGH, MEDIUM, LOW
+  performanceLevels: {
+    HIGH: {
+      starMult: 1.0,
+      grassMult: 1.0,
+      flowerMult: 1.0,
+      fireflyMult: 1.0,
+      pollenMult: 1.0,
+      maxDpr: 2.0,
+      fireworkDensityMult: 1.0,
+      fireworkSparkFreqMult: 1.0
+    },
+    MEDIUM: {
+      starMult: 0.75,
+      grassMult: 0.75,
+      flowerMult: 0.8,
+      fireflyMult: 0.7,
+      pollenMult: 0.65,
+      maxDpr: 1.5,
+      fireworkDensityMult: 0.75,
+      fireworkSparkFreqMult: 1.25
+    },
+    LOW: {
+      starMult: 0.5,
+      grassMult: 0.5,
+      flowerMult: 0.6,
+      fireflyMult: 0.5,
+      pollenMult: 0.45,
+      maxDpr: 1.0,
+      fireworkDensityMult: 0.5,
+      fireworkSparkFreqMult: 1.6
+    }
+  },
+  getPerfSetting(key) {
+    const tier = this.performanceTier || 'MEDIUM';
+    const settings = this.performanceLevels[tier] || this.performanceLevels.MEDIUM;
+    return settings[key] !== undefined ? settings[key] : this.performanceLevels.HIGH[key];
+  },
+  scaleFactor: 0.90,
+  celebrationDuration: 10500,
   initials: {
     viewBox: "0 0 600 240",
     strokes: []
@@ -106,7 +149,77 @@ const Config = {
 };
 
 /* ==================================================
-   2. BACKGROUND MUSIC MANAGER (images/music.mp3)
+   1.1 HARDWARE & RUNTIME PERFORMANCE DETECTOR
+   ================================================== */
+function detectPerformanceTier() {
+  if (Utils.prefersReducedMotion()) return 'LOW';
+
+  const cores = navigator.hardwareConcurrency;
+  const memory = navigator.deviceMemory;
+
+  if (cores !== undefined || memory !== undefined) {
+    const c = cores || 4;
+    const m = memory || 4;
+    if (c >= 6 || m >= 6) return 'HIGH';
+    if (c >= 4 && m >= 3) return 'MEDIUM';
+    if (c < 4 || m < 3) return 'LOW';
+  }
+
+  return 'MEDIUM';
+}
+
+class PerformanceManager {
+  constructor(onTierChange) {
+    this.tier = detectPerformanceTier();
+    Config.performanceTier = this.tier;
+    this.onTierChange = onTierChange;
+
+    this.frameCount = 0;
+    this.lastTime = performance.now();
+    this.lowFpsWindows = 0;
+    this.isMonitoring = true;
+  }
+
+  recordFrame(now) {
+    if (!this.isMonitoring) return;
+    this.frameCount++;
+    const elapsed = now - this.lastTime;
+
+    if (elapsed >= 2000) {
+      const fps = (this.frameCount * 1000) / elapsed;
+      this.frameCount = 0;
+      this.lastTime = now;
+
+      if (fps < 32) {
+        this.lowFpsWindows++;
+        if (this.lowFpsWindows >= 2) {
+          this.downgradeTier();
+        }
+      } else {
+        this.lowFpsWindows = Math.max(0, this.lowFpsWindows - 1);
+      }
+    }
+  }
+
+  downgradeTier() {
+    if (this.tier === 'HIGH') {
+      this.tier = 'MEDIUM';
+    } else if (this.tier === 'MEDIUM') {
+      this.tier = 'LOW';
+      this.isMonitoring = false;
+    } else {
+      return;
+    }
+    Config.performanceTier = this.tier;
+    this.lowFpsWindows = 0;
+    if (typeof this.onTierChange === 'function') {
+      this.onTierChange(this.tier);
+    }
+  }
+}
+
+/* ==================================================
+   2. BACKGROUND MUSIC MANAGER
    ================================================== */
 const bgMusic = {
   element: null,
@@ -116,7 +229,6 @@ const bgMusic = {
     this.element = document.getElementById('bg-music');
     if (this.element) {
       this.element.volume = 1.0;
-      this.play();
     }
   },
 
@@ -193,7 +305,7 @@ class Stage {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
     this.ctx = this.canvas.getContext('2d');
-    this.dpr = window.devicePixelRatio || 1;
+    this.dpr = Math.min(window.devicePixelRatio || 1, Config.getPerfSetting('maxDpr'));
     this.listeners = {};
     this.lastTime = performance.now();
     
@@ -207,6 +319,7 @@ class Stage {
   }
 
   resize(w, h) {
+    this.dpr = Math.min(window.devicePixelRatio || 1, Config.getPerfSetting('maxDpr'));
     this.width = w;
     this.height = h;
     this.canvas.width = w * this.dpr;
@@ -339,24 +452,28 @@ class ResponsiveSystem {
 
   getGrassCount() {
     const cat = this.getViewportCategory();
+    let base = 380;
     switch (cat) {
-      case 'small-phone': return 210;
-      case 'medium-phone': return 250;
-      case 'tablet': return 300;
-      case 'laptop': return 340;
-      case 'desktop': default: return 380;
+      case 'small-phone': base = 210; break;
+      case 'medium-phone': base = 250; break;
+      case 'tablet': base = 300; break;
+      case 'laptop': base = 340; break;
+      case 'desktop': default: base = 380; break;
     }
+    return Math.floor(base * Config.getPerfSetting('grassMult'));
   }
 
   getFlowerCount() {
     const cat = this.getViewportCategory();
+    let base = 80;
     switch (cat) {
-      case 'small-phone': return 32;
-      case 'medium-phone': return 42;
-      case 'tablet': return 55;
-      case 'laptop': return 68;
-      case 'desktop': default: return 80;
+      case 'small-phone': base = 32; break;
+      case 'medium-phone': base = 42; break;
+      case 'tablet': base = 55; break;
+      case 'laptop': base = 68; break;
+      case 'desktop': default: base = 80; break;
     }
+    return Math.floor(base * Config.getPerfSetting('flowerMult'));
   }
 
   getFlowerScale() {
@@ -372,24 +489,28 @@ class ResponsiveSystem {
 
   getFireflyCount() {
     const cat = this.getViewportCategory();
+    let base = 28;
     switch (cat) {
-      case 'small-phone': return 14;
-      case 'medium-phone': return 17;
-      case 'tablet': return 21;
-      case 'laptop': return 25;
-      case 'desktop': default: return 28;
+      case 'small-phone': base = 14; break;
+      case 'medium-phone': base = 17; break;
+      case 'tablet': base = 21; break;
+      case 'laptop': base = 25; break;
+      case 'desktop': default: base = 28; break;
     }
+    return Math.floor(base * Config.getPerfSetting('fireflyMult'));
   }
 
   getPollenCount() {
     const cat = this.getViewportCategory();
+    let base = 30;
     switch (cat) {
-      case 'small-phone': return 16;
-      case 'medium-phone': return 20;
-      case 'tablet': return 22;
-      case 'laptop': return 26;
-      case 'desktop': default: return 30;
+      case 'small-phone': base = 16; break;
+      case 'medium-phone': base = 20; break;
+      case 'tablet': base = 22; break;
+      case 'laptop': base = 26; break;
+      case 'desktop': default: base = 30; break;
     }
+    return Math.floor(base * Config.getPerfSetting('pollenMult'));
   }
 
   getSafeBottomInset() {
@@ -409,7 +530,7 @@ class ResponsiveSystem {
   updateDimensions() {
     this.width = window.innerWidth;
     this.height = window.innerHeight;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.dpr = Math.min(window.devicePixelRatio || 1, Config.getPerfSetting('maxDpr'));
 
     const meadowPct = this.getMeadowHeightPct();
     const grassCanvasHeight = this.height * meadowPct;
@@ -459,9 +580,10 @@ class ResponsiveSystem {
    7. BACKGROUND PARTICLES, MILKY WAY & CONTINUOUS STARS
    ================================================== */
 class ParticleSystem {
-  constructor(canvas) {
+  constructor(canvas, perfManager) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
+    this.perfManager = perfManager;
     this.particles = [];
     this.stars = [];
     this.stardustSparks = [];
@@ -504,10 +626,9 @@ class ParticleSystem {
   }
 
   initStars() {
-    if (this.stars.length > 0) return;
-
+    const targetCount = Math.floor(Config.sky.starCount * Config.getPerfSetting('starMult'));
     this.stars = [];
-    for (let i = 0; i < Config.sky.starCount; i++) {
+    for (let i = 0; i < targetCount; i++) {
       const isSparkle = Math.random() < 0.12;
       this.stars.push({
         relX: Math.random(),
@@ -604,7 +725,7 @@ class ParticleSystem {
     this.width = width; this.height = height;
     if (fireflyCount) this.fireflyCount = fireflyCount;
     if (pollenCount) this.pollenCount = pollenCount;
-    this.updateStarPositions();
+    this.initStars();
     this.initFireflies();
     this.initPollen();
   }
@@ -656,6 +777,8 @@ class ParticleSystem {
 
   loop(now = performance.now()) {
     if (!this.isRunning) return;
+    if (this.perfManager) this.perfManager.recordFrame(now);
+
     this.ctx.clearRect(0, 0, this.width, this.height);
     const isReduced = Utils.prefersReducedMotion();
 
@@ -1041,7 +1164,7 @@ class GrassSystem {
 }
 
 /* ==================================================
-   9. EXACT ORIGINAL FIREWORK ENGINE FROM INDEX(1).HTML
+   9. EXACT ORIGINAL FIREWORK ENGINE
    ================================================== */
 const GRAVITY = 0.9;
 let simSpeed = 1;
@@ -1342,9 +1465,9 @@ class Shell {
     this.glitterColor = options.glitterColor || this.color;
 
     if (!this.starCount) {
-      const density = options.starDensity || 1;
+      const density = (options.starDensity || 1) * Config.getPerfSetting('fireworkDensityMult');
       const scaledSize = this.spreadSize / 54;
-      this.starCount = Math.max(6, scaledSize * scaledSize * density);
+      this.starCount = Math.max(6, Math.floor(scaledSize * scaledSize * density));
     }
   }
 
@@ -1370,7 +1493,8 @@ class Shell {
 
     comet.heavy = true;
     comet.spinRadius = MyMath.random(0.32, 0.85);
-    comet.sparkFreq = 12; comet.sparkLife = 320; comet.sparkLifeVariation = 3;
+    comet.sparkFreq = 12 * Config.getPerfSetting('fireworkSparkFreqMult');
+    comet.sparkLife = 320; comet.sparkLifeVariation = 3;
     if (this.color === INVISIBLE) comet.sparkColor = COLOR.Gold;
 
     if (Math.random() > 0.4 && !this.horsetail) {
@@ -1405,6 +1529,8 @@ class Shell {
     else if (this.glitter === 'thick') { sparkFreq = 16; sparkSpeed = 1.5; sparkLife = 1400; sparkLifeVariation = 3; }
     else if (this.glitter === 'streamer') { sparkFreq = 32; sparkSpeed = 1.05; sparkLife = 620; sparkLifeVariation = 2; }
     else if (this.glitter === 'willow') { sparkFreq = 120; sparkSpeed = 0.34; sparkLife = 1400; sparkLifeVariation = 3.8; }
+
+    if (sparkFreq) sparkFreq *= Config.getPerfSetting('fireworkSparkFreqMult');
 
     const starFactory = (angle, speedMult) => {
       const standardInitialSpeed = this.spreadSize / 1800;
@@ -1475,7 +1601,7 @@ class Shell {
     if (this.streamers) {
       const innerShell = new Shell({
         spreadSize: this.spreadSize * 0.9, starLife: this.starLife * 0.8,
-        starLifeVariation: this.starLifeVariation, starCount: Math.floor(Math.max(6, this.spreadSize / 45)),
+        starLifeVariation: this.starLifeVariation, starCount: Math.floor(Math.max(6, (this.spreadSize / 45) * Config.getPerfSetting('fireworkDensityMult'))),
         color: COLOR.White, glitter: 'streamer'
       });
       innerShell.burst(x, y);
@@ -1682,7 +1808,6 @@ function renderFireworks(speed) {
   trailsCtx.scale(dpr * scale, dpr * scale);
   mainCtx.scale(dpr * scale, dpr * scale);
 
-  // PRESERVE GARDEN VISIBILITY: Use 'destination-out' to fade particle trails to transparent instead of dark fill!
   trailsCtx.globalCompositeOperation = 'destination-out';
   trailsCtx.fillStyle = `rgba(0, 0, 0, ${0.12 * speed})`;
   trailsCtx.fillRect(0, 0, width, height);
@@ -1731,38 +1856,12 @@ function renderFireworks(speed) {
   trailsCtx.setTransform(1, 0, 0, 1, 0, 0);
   mainCtx.setTransform(1, 0, 0, 1, 0, 0);
 
-  // Update Dynamic Scene Lighting
   updateEnvironmentLighting(speed);
 }
-
-let finaleInterval = null;
-
-function launchFinaleBatch() {
-  if (!isFireworksActive) return;
-  const shellCount = Math.floor(Math.random() * 4) + 1;
-
-  for (let i = 0; i < shellCount; i++) {
-    const shellName = MyMath.randomChoice(shellNames);
-    const size = 4; // 12-inch shells
-    const shellObj = shellTypes[shellName](size);
-    const shell = new Shell(shellObj);
-
-    const posX = MyMath.random(0.15, 0.85);
-    const posY = MyMath.random(0.35, 0.85);
-
-    setTimeout(() => {
-      if (isFireworksActive) shell.launch(posX, posY);
-    }, i * MyMath.random(60, 180));
-  }
-}
-let ambientInterval = null;
-let isAmbientMode = false;
-let fireworkSoundVolume = 1.0;
 
 function launchAmbientShell() {
   if (!isFireworksActive || !isAmbientMode) return;
   
-  // Launch 1 to 2 fireworks per wave
   const shellCount = Math.floor(Math.random() * 2) + 1;
   for (let i = 0; i < shellCount; i++) {
     setTimeout(() => {
@@ -1786,18 +1885,16 @@ function startAmbientFireworks() {
   isFireworksActive = true;
   isAmbientMode = true;
 
-  // ✦ Increased sound volume (from 0.15 to 0.40)
-  fireworkSoundVolume = 0.40; 
+  fireworkSoundVolume = 0.40;
 
   const container = document.getElementById('fireworks-canvas-container');
   if (container) container.classList.add('active');
 
-  // Launch initial shell immediately
   setTimeout(() => {
     if (isAmbientMode) launchAmbientShell();
   }, 400);
 
-  // ✦ Increased launch frequency (every 2.2 seconds instead of 4 seconds)
+  if (ambientInterval) clearInterval(ambientInterval);
   ambientInterval = setInterval(() => {
     if (isAmbientMode) {
       launchAmbientShell();
@@ -1813,35 +1910,14 @@ function stopAmbientFireworks() {
   }
 }
 
-function startFinaleCelebration() {
-  stopAmbientFireworks(); // Stop ambient mode
-  
-  isFireworksActive = true;
-  isAmbientMode = false;
-  fireworkSoundVolume = 1.0; // Full volume for grand finale
-
-  const container = document.getElementById('fireworks-canvas-container');
-  if (container) container.classList.add('active');
-
-  const moonlitScene = document.getElementById('moonlit-sky-scene');
-  if (moonlitScene) moonlitScene.classList.add('at-end');
-
-  launchFinaleBatch();
-  finaleInterval = setInterval(launchFinaleBatch, 1100);
-}
-
-function stopFinaleCelebration() {
-  clearInterval(finaleInterval);
-}
-
 /* ==================================================
-   9. HANDWRITING ANIMATION SYSTEM
+   10. HANDWRITING ANIMATION SYSTEM
    ================================================== */
 class HandwritingSystem {
   constructor(svgElement, penTipElement, particleSystem) {
     this.svg = svgElement;
     this.penTip = penTipElement;
-    this.strokeGroup = svgElement.querySelector('#stroke-group');
+    this.strokeGroup = svgElement ? svgElement.querySelector('#stroke-group') : null;
     this.particleSystem = particleSystem;
     this.paths = [];
     this.isWriting = false;
@@ -1850,6 +1926,7 @@ class HandwritingSystem {
   }
 
   buildPaths() {
+    if (!this.strokeGroup) return;
     this.strokeGroup.innerHTML = '';
     this.paths = [];
 
@@ -1878,7 +1955,7 @@ class HandwritingSystem {
 
   async animateAll() {
     this.isWriting = true;
-    if (Utils.prefersReducedMotion()) {
+    if (Utils.prefersReducedMotion() || !this.paths.length) {
       this.paths.forEach(p => p.element.style.strokeDashoffset = '0');
       if (this.penTip) this.penTip.style.opacity = '0';
       this.isWriting = false;
@@ -1924,7 +2001,7 @@ class HandwritingSystem {
   }
 
   updatePenTipPosition(point) {
-    if (!this.penTip) return;
+    if (!this.penTip || !this.svg) return;
     this.penTip.setAttribute('cx', point.x);
     this.penTip.setAttribute('cy', point.y);
 
@@ -1937,12 +2014,12 @@ class HandwritingSystem {
     }
   }
 
-  applySoftGlow() { this.svg.classList.add('has-soft-glow'); }
-  reset() { this.svg.classList.remove('has-soft-glow'); this.buildPaths(); }
+  applySoftGlow() { if (this.svg) this.svg.classList.add('has-soft-glow'); }
+  reset() { if (this.svg) this.svg.classList.remove('has-soft-glow'); this.buildPaths(); }
 }
 
 /* ==================================================
-   10. SCENE MANAGER & CELEBRATION TRIGGER
+   11. SCENE MANAGER & CELEBRATION TRIGGER
    ================================================== */
 class SceneManager {
   constructor(particleSystem, grassSystem) {
@@ -1980,11 +2057,10 @@ class SceneManager {
   }
 
   buildScrapbookDOM() {
-    // 1. Set top heading text above the cards
     const topHeading = document.getElementById('scrapbook-top-heading');
     if (topHeading && Config.finalMessage) {
       const recipient = Config.finalMessage.recipientName || 'Zoya';
-      topHeading.textContent = `Happy Birthday, ${recipient} .`;
+      topHeading.textContent = `Happy Birthday, ${recipient} ✦`;
     }
 
     if (!this.scrapbookTrack || !Config.memories) return;
@@ -2018,7 +2094,6 @@ class SceneManager {
       img.src = mem.image;
       img.onerror = () => { img.onerror = null; img.src = fallbackSrc; };
 
-      // Determine 3:4 vs 4:3 Aspect Ratio
       const aspectClass = mem.aspectRatio === '3/4' ? 'aspect-portrait' : 'aspect-landscape';
 
       card.innerHTML = `
@@ -2115,7 +2190,6 @@ class SceneManager {
   }
 
   checkScrollEnd() {
-    // ONE-TIME ONLY TRIGGER CHECK
     if (!this.memoryLaneScrapbook || this.celebrationTriggered || this.celebrationCompleted || !this.memoryCards || !this.memoryCards.length) return;
 
     const maxScroll = this.memoryLaneScrapbook.scrollWidth - this.memoryLaneScrapbook.clientWidth;
@@ -2130,26 +2204,22 @@ class SceneManager {
     if (this.celebrationTriggered || this.celebrationCompleted) return;
     this.celebrationTriggered = true;
 
-    // Center final memory card
     const lastCard = this.memoryCards[this.memoryCards.length - 1];
     if (lastCard && this.memoryLaneScrapbook) {
       const targetScroll = lastCard.offsetLeft - (this.memoryLaneScrapbook.clientWidth - lastCard.clientWidth) / 2;
       this.memoryLaneScrapbook.scrollTo({ left: Math.max(0, targetScroll), behavior: 'smooth' });
     }
 
-    // Lock scrolling
     this.memoryLaneScrapbook.classList.add('is-locked');
 
     await Utils.wait(1000);
 
-    // Fade out memory track and top heading
     if (this.scrapbookTrack) {
       this.scrapbookTrack.classList.add('fade-out');
     }
     const topHeading = document.getElementById('scrapbook-top-heading');
     if (topHeading) topHeading.classList.add('fade-out');
 
-    // ✦ Directly reveal final message card (No finale firework delay)
     this.revealFinalMessage();
   }
 
@@ -2165,15 +2235,12 @@ class SceneManager {
   }
 
   handleFinalCloseClick() {
-    // Permanently mark celebration as completed for this session
     this.celebrationCompleted = true;
 
-    // 1. Fade out final message card
     if (this.finalMessageContainer) {
       this.finalMessageContainer.classList.remove('visible');
     }
 
-    // 2. RESTORE MOONLIT GARDEN APPEARANCE 100% (No dark strip, no leftover dimming/tint)
     const moonlitScene = document.getElementById('moonlit-sky-scene');
     if (moonlitScene) {
       moonlitScene.classList.remove('at-end');
@@ -2185,22 +2252,17 @@ class SceneManager {
       flashOverlay.style.background = 'transparent';
     }
 
-    const fwStage1 = document.getElementById('trails-canvas');
-    const fwStage2 = document.getElementById('main-canvas');
-    if (fwStage1) { const ctx1 = fwStage1.getContext('2d'); if (ctx1) ctx1.clearRect(0, 0, fwStage1.width, fwStage1.height); }
-    if (fwStage2) { const ctx2 = fwStage2.getContext('2d'); if (ctx2) ctx2.clearRect(0, 0, fwStage2.width, fwStage2.height); }
-
-    // 3. Smoothly fade Memory Lane back into view & unlock scrolling
     setTimeout(() => {
       if (this.scrapbookTrack) {
-      this.scrapbookTrack.classList.remove('fade-out');
-    }
-    const topHeading = document.getElementById('scrapbook-top-heading');
-    if (topHeading) topHeading.classList.remove('fade-out');
+        this.scrapbookTrack.classList.remove('fade-out');
+      }
 
       if (this.memoryLaneScrapbook) {
         this.memoryLaneScrapbook.classList.remove('is-locked');
       }
+
+      const topHeading = document.getElementById('scrapbook-top-heading');
+      if (topHeading) topHeading.classList.remove('fade-out');
 
       if (this.memoryCards) {
         this.memoryCards.forEach(card => card.classList.add('in-view'));
@@ -2265,7 +2327,6 @@ class SceneManager {
       this.memoryCards.forEach(card => card.classList.add('in-view'));
     }
 
-    // ✦ Start soft background ambient fireworks behind the cards!
     startAmbientFireworks();
 
     this.isTransitioning = false;
@@ -2273,7 +2334,7 @@ class SceneManager {
 }
 
 /* ==================================================
-   11. TIMELINE MANAGER & INITIALIZATION
+   12. TIMELINE MANAGER & INITIALIZATION
    ================================================== */
 class TimelineManager {
   constructor(handwritingSystem, sceneManager) {
@@ -2319,7 +2380,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const svg = document.getElementById('initials-svg');
   const penTip = document.getElementById('pen-tip');
 
-  const particleSystem = new ParticleSystem(particleCanvas);
+  const perfManager = new PerformanceManager(() => {
+    responsiveSystem.handleResize();
+  });
+
+  const particleSystem = new ParticleSystem(particleCanvas, perfManager);
   const grassSystem = new GrassSystem(grassCanvas);
   const responsiveSystem = new ResponsiveSystem(particleCanvas, grassCanvas, particleSystem, grassSystem);
   const handwritingSystem = new HandwritingSystem(svg, penTip, particleSystem);
@@ -2330,20 +2395,22 @@ document.addEventListener('DOMContentLoaded', () => {
   particleSystem.start();
   grassSystem.start();
 
-  // Option 2: Start experience & music when "Open Gift" is clicked
   const openBtn = document.getElementById('open-gift-btn');
   const entryScreen = document.getElementById('entry-screen');
 
   if (openBtn) {
     openBtn.addEventListener('click', () => {
-      bgMusic.play();
-      soundManager.resume();
-
       if (entryScreen) {
         entryScreen.classList.add('fade-out');
       }
 
-      // Starts handwriting loading sequence immediately!
+      try {
+        bgMusic.play();
+        soundManager.resume();
+      } catch (err) {
+        console.log('Audio info:', err);
+      }
+
       timelineManager.runSequence();
     });
   } else {
